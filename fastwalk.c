@@ -90,11 +90,10 @@ static int walk(char *dir, char **skip, int skipcnt)
 
 	DIR *d = fdopendir(fd);
 	
-	int err;
 	struct dirent *de;
 	de = alloca(offsetof(struct dirent, d_name) + 
 		    pathconf(dir, _PC_NAME_MAX) + 1); 
-	while ((err = readdir_r(d, de, &de)) == 0 && de) { 
+	while (readdir_r(d, de, &de) == 0 && de) { 
 		char *name;
 
 		if (asprintf(&name, "%s/%s", dir, de->d_name) < 0) 
