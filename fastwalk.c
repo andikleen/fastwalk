@@ -3,7 +3,9 @@
    more CPU time. 
 
    The file list can be processed by a program that reads the file data
-   with minimum seeks
+   with minimum seeks.
+
+   Alternatively it can just start readaheads
 
   */
 #define _GNU_SOURCE 1
@@ -219,7 +221,7 @@ static void usage(void)
 {
 	fprintf(stderr, "Usage: fastwalk [-pSKIP] [-r]\n"
 			"-pSKIP skip files/directories named SKIP\n"
-			"-r	read ahead files instead of outputting name\n");
+			"-r     read ahead files instead of outputting name\n");
 	exit(1);
 }
 
@@ -247,9 +249,13 @@ int main(int ac, char **av)
 		}
 	}
 
-	for (i = optind; i < ac; i++) { 
-		if (walk(av[i], skip, skipcnt))
-			found_unknown = 1;
+	if (optind == ac) {
+		walk(".", skip, skipcnt);
+	} else { 
+		for (i = optind; i < ac; i++) { 
+			if (walk(av[i], skip, skipcnt))
+				found_unknown = 1;
+		}
 	}
 
 	/* First pass: inode sort for fast stat */
