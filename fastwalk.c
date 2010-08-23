@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <alloca.h>
 #include <string.h>
+#include <fcntl.h>
 
 struct entry { 
 	ino_t ino;
@@ -59,7 +60,18 @@ static struct entry *getentry(void)
 	return &entries[numentries++];
 }
 
-static int walk(char *dir)
+static int doskip(char *name, char **skip, int skipcnt)
+{
+	int k;
+
+	for (k = 0; k < skipcnt; k++) {
+		if (!strcmp(name, skip[k]))
+			return 1;
+	}
+	return 0;
+}
+
+static int walk(char *dir, char **skip, int skipcnt)
 {
 	int found_unknown = 0;
 	struct stat st;
@@ -70,7 +82,8 @@ static int walk(char *dir)
 	}
 	if (fstat(fd, &st) < 0) { 
 		Perror(dir);
-		goto out;
+		close(fd);
+		return found_unknown;
 	}
 
 	DIR *d = fdopendir(fd);
@@ -84,13 +97,12 @@ static int walk(char *dir)
 
 		if (asprintf(&name, "%s/%s", dir, de->d_name) < 0) 
 			oom();
-		
-		if (de->d_name[0] == '.' &&
-		    (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")))
+
+		if (doskip(de->d_name, skip, skipcnt))
 			continue;
 
 		if (de->d_type == DT_DIR) { 
-			if (walk(name))
+			if (walk(name, skip, skipcnt))
 				found_unknown = 1;
 			free(name);
 		} else {
@@ -110,8 +122,6 @@ static int walk(char *dir)
 	} 
 		
 	closedir(d);
-out:
-	close(fd);
 	return found_unknown;
 }
 
@@ -142,7 +152,7 @@ static void sort_inodes(void)
 	qsort(entries, numentries, sizeof(struct entry), cmp_entry_ino);
 }
 
-static void handle_unknown(void)
+static void handle_unknown(char **skip, int skipcnt)
 {
 	int i, start, max, found_unknown;
 
@@ -161,7 +171,8 @@ static void handle_unknown(void)
 				Perror(entries[i].name); 
 				continue;
 			}
-			if (S_ISDIR(st.st_mode) && walk(entries[i].name))
+			if (S_ISDIR(st.st_mode) && walk(entries[i].name, 
+							skip, skipcnt))
 				found_unknown = 1;
 		}
 
@@ -204,13 +215,40 @@ static void get_disk(char *name, int fd, unsigned long long *disk)
 	}
 }
 
+static void usage(void)
+{
+	fprintf(stderr, "Usage: fastwalk [-pSKIP] [-r]\n"
+			"-pSKIP skip files/directories named SKIP\n"
+			"-r	read ahead files instead of outputting name\n");
+	exit(1);
+}
+
 int main(int ac, char **av)
 {
 	int i;
 	int found_unknown = 0;
+	int opt;
+	int do_readahead = 0;
+	char *skip[ac + 2];
+	int skipcnt = 0;
 
-	while (*++av) { 
-		if (walk(*av))
+	skip[skipcnt++] = ".";
+	skip[skipcnt++] = "..";
+	while ((opt = getopt(ac, av, "p:r")) != -1) {
+		switch (opt) { 
+		case 'p':
+			skip[skipcnt++] = optarg;
+			break;
+		case 'r':
+			do_readahead = 1;
+			break;
+		default:
+			usage();
+		}
+	}
+
+	for (i = optind; i < ac; i++) { 
+		if (walk(av[i], skip, skipcnt))
 			found_unknown = 1;
 	}
 
@@ -219,7 +257,7 @@ int main(int ac, char **av)
 	
 	/* For DT_UNKNOWN file systems complete the tree */
 	if (found_unknown)
-		handle_unknown();
+		handle_unknown(skip, skipcnt);
 
 	/* Get disk addresses */
 	for (i = 0; i < numentries; i++) {
@@ -237,8 +275,20 @@ int main(int ac, char **av)
 	/* Sort by disk order */
 	qsort(entries, numentries, sizeof(struct entry), cmp_entry_disk);
 
-	for (i = 0; i < numentries; i++)
-		puts(entries[i].name);
+	if (do_readahead) {
+		for (i = 0; i < numentries; i++) { 
+			int fd = open(entries[i].name, O_RDONLY);
+			if (fd < 0) {
+				Perror(entries[i].name);
+				continue;
+			}
+			readahead(fd, 0, 0xffffffff);
+			close(fd);
+		}
+	} else {
+		for (i = 0; i < numentries; i++)
+			puts(entries[i].name);
+	}
 
 	return error;
 }
