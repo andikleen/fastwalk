@@ -25,22 +25,49 @@
 #include <alloca.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/resource.h>
+#include "list.h"
+
+typedef unsigned long long u64;
+
+struct fd;
 
 struct entry { 
 	ino_t ino;
 	dev_t dev;
 	unsigned type;
 	char *name;
-	unsigned long long disk;
+	struct fd *fd;
+	int numextents;
 };
 
 enum { 
 	START_SIZE = (64 * 4096)/sizeof(struct entry),
+	EXTENTS_START = 4096,
+};
+
+struct extent {
+	u64 disk;
+	u64 offset;
+	u64 len;
+	struct entry *entry;
+};
+
+struct fd { 
+	struct entry *entry;
+	struct list_head lru;
+	int fd;
 };
 
 static struct entry *entries;
 static int maxentries, numentries;
+
+static struct extent *extents;
+static int maxextents, numextents;
+
 int error;
+
+int do_readahead;
 
 #define Perror(x) perror(x),error++
 
@@ -50,18 +77,33 @@ static void oom(void)
 	exit(ENOMEM);
 }
 
+static void *xrealloc(void *ptr, unsigned n)
+{
+	void *p = realloc(ptr, n);
+	if (!p) oom();
+	return p;
+}
+
+static void *xmalloc(unsigned n)
+{
+	void *p = malloc(n);
+	if (!p) oom();
+	return p;
+}
+
 static struct entry *getentry(void)
 {
+	struct entry *e;
 	if (numentries >= maxentries) {
 		if (maxentries == 0)
 			maxentries = START_SIZE;
 		else
 			maxentries *= 2;
-		entries = realloc(entries, maxentries * sizeof(struct entry));
-		if (!entries)
-			oom();
+		entries = xrealloc(entries, maxentries * sizeof(struct entry));
 	}
-	return &entries[numentries++];
+	e = &entries[numentries++];
+	memset(e, 0, sizeof(struct entry));
+	return e;
 }
 
 static int doskip(char *name, char **skip, int skipcnt)
@@ -115,7 +157,6 @@ static int walk(char *dir, char **skip, int skipcnt)
 			e->ino = de->d_ino;
 			e->dev = st.st_dev;
 			e->name = name;
-			e->disk = 0;
 
 			if (e->type == DT_UNKNOWN) {
 				found_unknown = 1;
@@ -139,14 +180,10 @@ static int cmp_entry_ino(const void *av, const void *bv)
 	return a->ino - b->ino;
 }
 
-static int cmp_entry_disk(const void *av, const void *bv)
+static int cmp_extent(const void *av, const void *bv)
 {
-	const struct entry *a = av;
-	const struct entry *b = bv;
-#if 0
-	if (a->dev != b->dev)
-		return a->dev - b->dev;
-#endif
+	const struct extent *a = av;
+	const struct extent *b = bv;
 	return a->disk - b->disk;
 }
 
@@ -187,35 +224,144 @@ static void handle_unknown(char **skip, int skipcnt)
 	} 
 }
 
-static void get_disk(char *name, int fd, unsigned long long *disk)
+static struct extent *get_extents(int num)
 {
+	struct extent *e;
+	
+	while (numextents + num > maxextents) { 
+		if (maxextents == 0)
+			maxextents = EXTENTS_START;
+		maxextents *= 2;
+		extents = xrealloc(extents, maxextents * sizeof(struct extent));
+	}
+	e = extents + numextents;
+	numextents += num;
+	return e;
+}
+
+static void save_extents(struct fiemap *fie, struct entry *entry)
+{
+	struct extent *e;
+	int i;
+	int num = do_readahead ? fie->fm_mapped_extents : 1; 
+
+	e = get_extents(num);
+	for (i = 0; i < num; i++, e++) { 
+		if (fie->fm_extents[i].fe_flags & FIEMAP_EXTENT_UNKNOWN) {
+			memset(e, 0, sizeof(struct extent));
+			continue;
+		}
+		e->disk = fie->fm_extents[i].fe_physical;
+		e->offset = fie->fm_extents[i].fe_logical;
+		e->len = fie->fm_extents[i].fe_length;
+		e->entry = entry;
+	}
+	entry->numextents = num;
+}
+
+static void get_disk(char *name, int fd, struct entry *entry)
+{
+	u64 disk;
 	static int once;
-	const int N = 1;
+	const int N = 100;
 	struct fiemap *fie = alloca(sizeof(struct fiemap) + 
 				    sizeof(struct fiemap_extent)*N);
+	struct stat st;
+
+	if (stat(name, &st) < 0) { 
+		Perror(name);
+		return;
+	}
 
 	memset(fie, 0, sizeof(struct fiemap));
 	fie->fm_extent_count = N;
-	fie->fm_length = 4096; /* Assume the file is continuous */
+	fie->fm_start = 0;
+	fie->fm_length = st.st_size;
+	
+	/* If the extents have out of inode contents we will seek here.
+	   No way to avoid that currently */
+
 	if (ioctl(fd, FS_IOC_FIEMAP, fie) >= 0) {
 		if (fie->fm_flags & FIEMAP_EXTENT_UNKNOWN) { 
 			if (!once)
 				fprintf(stderr, "%s: Disk location unknown\n", name); 
 			once = 1;
 		}
-		if (fie->fm_mapped_extents > 0)
-			*disk = fie->fm_extents[0].fe_physical;
+		save_extents(fie, entry);
 		return;
 	}
 	
-	if (ioctl(fd, FIBMAP, disk) < 0) {
+	if (ioctl(fd, FIBMAP, &disk) < 0) {
 		if (errno == EPERM) {
 			if (!once) 
 				fprintf(stderr, 
 					"%s: No FIEMAP and no root: no disk data sorting\n", name);
 			once = 1;
 		}
+		memset(fie, 0, 
+		       sizeof(struct fiemap) + sizeof(struct fiemap_extent));
+		fie->fm_mapped_extents = 1;
+		fie->fm_extents[0].fe_physical = st.st_size;
+		save_extents(fie, entry);
 	}
+}
+
+/* LRU for file descriptors */
+
+static LIST_HEAD(lru);
+static struct fd *fds;
+static int free_fd, max_fd;
+
+static void init_fd(void)
+{
+	struct rlimit rlim;
+	if (getrlimit(RLIMIT_NOFILE, &rlim) < 0)
+		rlim.rlim_cur = 100;
+	max_fd = rlim.rlim_cur;
+	max_fd -= max_fd / 10; /* save 10% for safety */
+	fds = xmalloc(sizeof(struct fd) * max_fd);
+}
+
+static void do_close_fd(struct fd *fd)
+{
+	close(fd->fd);
+	fd->entry->fd = NULL;
+	fd->entry = NULL;
+}
+
+static struct fd *get_fd(struct entry *e)
+{
+	struct fd *fd = e->fd;
+	if (fd) {
+		list_del(&fd->lru);
+	} else {
+		if (free_fd < max_fd) { 
+			fd = &fds[free_fd++];
+		} else { 
+			fd = list_entry(lru.prev, struct fd, lru);
+			if (fd->entry)
+				do_close_fd(fd);
+			list_del(&fd->lru);
+		}
+		
+		fd->fd = open(e->name, O_RDONLY);
+		if (fd->fd < 0) { 
+			list_add_tail(&fd->lru, &lru);
+			return NULL;
+		} else { 
+			e->fd = fd;
+		}
+		fd->entry = e;
+	}
+	list_add(&fd->lru, &lru);
+	return fd;
+}
+
+static void close_fd(struct fd *fd)
+{
+	do_close_fd(fd);
+	list_del(&fd->lru);
+	list_add_tail(&fd->lru, &lru);
 }
 
 static void usage(void)
@@ -231,7 +377,6 @@ int main(int ac, char **av)
 	int i;
 	int found_unknown = 0;
 	int opt;
-	int do_readahead = 0;
 	char *skip[ac + 2];
 	int skipcnt = 0;
 
@@ -274,24 +419,30 @@ int main(int ac, char **av)
 			continue;
 		fd = open(entries[i].name, O_RDONLY);
 		if (fd >= 0) {
-			get_disk(entries[i].name, fd, &entries[i].disk);
+			get_disk(entries[i].name, fd, &entries[i]);
 			close(fd);
 		} else
 			Perror(entries[i].name);
 	}
 		
 	/* Sort by disk order */
-	qsort(entries, numentries, sizeof(struct entry), cmp_entry_disk);
+	qsort(extents, numextents, sizeof(struct extent), cmp_extent);
 
 	if (do_readahead) {
-		for (i = 0; i < numentries; i++) { 
-			int fd = open(entries[i].name, O_RDONLY);
-			if (fd < 0) {
-				Perror(entries[i].name);
+		init_fd();
+
+		for (i = 0; i < numextents; i++) {
+			struct extent *ex = &extents[i];
+			struct entry *e = ex->entry;
+			struct fd *fd = get_fd(e);
+			
+			if (!fd) { 
+				Perror(e->name);
 				continue;
 			}
-			readahead(fd, 0, 0xffffffff);
-			close(fd);
+			readahead(fd->fd, ex->offset, ex->len);
+			if (--e->numextents == 0)
+				close_fd(fd);
 		}
 	} else {
 		for (i = 0; i < numentries; i++)
