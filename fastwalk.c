@@ -7,6 +7,8 @@
 
    Alternatively it can just start readaheads
 
+   TBD: Sort extents individually for readahead.
+
   */
 #define _GNU_SOURCE 1
 #include <dirent.h>
@@ -248,6 +250,7 @@ int main(int ac, char **av)
 		}
 	}
 
+	/* First pass: read directories */
 	if (optind == ac) {
 		walk(".", skip, skipcnt);
 	} else { 
@@ -257,14 +260,14 @@ int main(int ac, char **av)
 		}
 	}
 
-	/* First pass: inode sort for fast stat */
+	/* Inode sort for fast stat */
 	sort_inodes();
 	
 	/* For DT_UNKNOWN file systems complete the tree */
 	if (found_unknown)
 		handle_unknown(skip, skipcnt);
 
-	/* Get disk addresses */
+	/* Second pass: Get disk addresses: reads inodes and extents */
 	for (i = 0; i < numentries; i++) {
 		int fd;
 		if (entries[i].type != DT_REG)
