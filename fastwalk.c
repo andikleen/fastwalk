@@ -21,6 +21,7 @@
 #include <alloca.h>
 #include <string.h>
 #include <fcntl.h>
+#include <assert.h>
 #include <sys/resource.h>
 #include "list.h"
 
@@ -346,21 +347,32 @@ static void do_close_fd(struct fd *fd)
 	fd->entry = NULL;
 }
 
+static struct fd *get_unused_fd(void)
+{
+	struct fd *fd;
+	if (!list_empty(&lru)) {
+		fd = list_entry(lru.prev, struct fd, lru);
+		if (!fd->entry) {
+			list_del(&fd->lru);
+			return fd;
+		}
+	}
+	if (free_fd < max_fd) {
+		fd = &fds[free_fd++];
+	} else {
+		do_close_fd(fd);
+		list_del(&fd->lru);
+	}
+	return fd;
+}
+
 static struct fd *get_fd(struct entry *e)
 {
 	struct fd *fd = e->fd;
 	if (fd) {
 		list_del(&fd->lru);
 	} else {
-		if (free_fd < max_fd) { 
-			fd = &fds[free_fd++];
-		} else { 
-			fd = list_entry(lru.prev, struct fd, lru);
-			if (fd->entry)
-				do_close_fd(fd);
-			list_del(&fd->lru);
-		}
-		
+		fd = get_unused_fd();
 		fd->fd = open(e->name, O_RDONLY);
 		if (fd->fd < 0) { 
 			list_add_tail(&fd->lru, &lru);
