@@ -6,9 +6,6 @@
    with minimum seeks.
 
    Alternatively it can just start readaheads
-
-   TBD: Sort extents individually for readahead.
-
   */
 #define _GNU_SOURCE 1
 #include <dirent.h>

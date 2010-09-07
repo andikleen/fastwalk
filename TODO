@@ -1,2 +1,4 @@
 
 - implement kernel extension to get FIEMAP for metadata
+
+- multithreaded readahead for different majors?
