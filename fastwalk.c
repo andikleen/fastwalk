@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <sys/fcntl.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
