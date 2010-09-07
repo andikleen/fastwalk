@@ -37,7 +37,10 @@ struct entry {
 	dev_t dev;
 	unsigned type;
 	char *name;
-	struct fd *fd;
+	union {
+		struct fd *fd;
+		u64 disk;
+	};
 	int numextents;
 };
 
@@ -173,11 +176,14 @@ static int cmp_entry_ino(const void *av, const void *bv)
 {
 	const struct entry *a = av;
 	const struct entry *b = bv;
-#if 0
-	if (a->dev != b->dev)
-		return a->dev - b->dev;
-#endif
 	return a->ino - b->ino;
+}
+
+static int cmp_entry_disk(const void *av, const void *bv)
+{
+	const struct entry *a = av;
+	const struct entry *b = bv;
+	return a->disk - b->disk;
 }
 
 static int cmp_extent(const void *av, const void *bv)
@@ -190,6 +196,21 @@ static int cmp_extent(const void *av, const void *bv)
 static void sort_inodes(void)
 {
 	qsort(entries, numentries, sizeof(struct entry), cmp_entry_ino);
+}
+
+/* Sort entry by disk order. Only for the first extent */
+static void sort_entries_disk(void)
+{
+	int i;
+	for (i = 0; i < numextents; i++)
+		extents[i].entry->disk = extents[i].disk;
+	qsort(entries, numentries, sizeof(struct entry), cmp_entry_disk);
+}
+
+/* Sort extents by disk order */
+static void sort_extents(void)
+{
+	qsort(extents, numextents, sizeof(struct extent), cmp_extent);
 }
 
 static void handle_unknown(char **skip, int skipcnt)
@@ -412,7 +433,11 @@ int main(int ac, char **av)
 	if (found_unknown)
 		handle_unknown(skip, skipcnt);
 
-	/* Second pass: Get disk addresses: reads inodes and extents */
+	/* Second pass: Get disk addresses: reads inodes and extents.
+	   The extent reading is not necessarily in disk order
+	   because the kernel doesn't give us this currently. 
+	   But it should work for the common case of the extents
+	   (or indirect blocks) being inlined into the inode. */
 	for (i = 0; i < numentries; i++) {
 		int fd;
 		if (entries[i].type != DT_REG)
@@ -424,13 +449,13 @@ int main(int ac, char **av)
 		} else
 			Perror(entries[i].name);
 	}
-		
-	/* Sort by disk order */
-	qsort(extents, numextents, sizeof(struct extent), cmp_extent);
 
 	if (do_readahead) {
 		init_fd();
+		
+		sort_extents();
 
+		/* Third pass: read the data in disk order */
 		for (i = 0; i < numextents; i++) {
 			struct extent *ex = &extents[i];
 			struct entry *e = ex->entry;
@@ -445,6 +470,8 @@ int main(int ac, char **av)
 				close_fd(fd);
 		}
 	} else {
+		sort_entries_disk();
+
 		for (i = 0; i < numentries; i++)
 			puts(entries[i].name);
 	}
