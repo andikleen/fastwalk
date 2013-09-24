@@ -1,0 +1,24 @@
+.TH FASTWALK 
+.SH NAME
+fastwalk - fast directory tree walking in disk order
+.SH SYNOPSIS
+fastwalk [-r] [-s skipdir ...] dir ...
+.SH DESCRIPTION
+.B fastwalk
+walks directory trees in logical disk order. By default
+it primes the inode and directory caches and then generates
+a list of file names in disk order.
+.SH OPTIONS
+.B -r 
+do actual readahead of the file contents instead of just outputting the file name.
+.PP
+.B -p skipdir
+Skip all directories named skipdir. Can be specified multiple times.
+.SH BUGS
+It works best on file systems that support DT_*. For example XFS
+and VFAT do not support it.
+It may not do the correct thing on complex file systems like btrfs.
+Works best on "classic" file systems like ext[234]. 
+
+
+

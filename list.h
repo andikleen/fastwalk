@@ -1,4 +1,4 @@
-/* Stripped down version of the Linux 2.6.30 list.h */
+/* Stripped down version of the Linux 2.6.30 list.h. GPL. Various authors. */
 
 #include <stddef.h>
 

@@ -1,3 +1,21 @@
+/* Copyright (c) 2013 by Intel Corp.
+
+   fastwalk is free software; you can redistribute it and/or
+   modify it under the terms of the GNU General Public
+   License as published by the Free Software Foundation; version
+   2.
+
+   fastwalk is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should find a copy of v2 of the GNU General Public License somewhere
+   on your Linux system.
+
+   Author:
+   Andi Kleen */
+
 /* Print list of files for directory trees in disk order of data on disk.
    Is careful to minimize seeks during operation, at the cost of some
    more CPU time. 
@@ -67,9 +85,11 @@ static int maxextents, numextents;
 
 int error;
 
+int debug;
+
 int do_readahead;
 
-#define Perror(x) perror(x),error++
+#define Perror(x) (perror(x),error = 1)
 
 static void oom(void)
 {
@@ -160,7 +180,8 @@ static int walk(char *dir, char **skip, int skipcnt)
 
 			if (e->type == DT_UNKNOWN) {
 				found_unknown = 1;
-				fprintf(stderr, "%s: DT_UNKNOWN\n", name);
+				if (debug)
+					fprintf(stderr, "%s: DT_UNKNOWN\n", name);
 			}
 		}
 	} 
@@ -267,6 +288,7 @@ static void save_extents(struct fiemap *fie, struct entry *entry)
 	for (i = 0; i < num; i++, e++) { 
 		if (fie->fm_extents[i].fe_flags & FIEMAP_EXTENT_UNKNOWN) {
 			memset(e, 0, sizeof(struct extent));
+			e->entry = entry;
 			continue;
 		}
 		e->disk = fie->fm_extents[i].fe_physical;
@@ -330,6 +352,28 @@ static LIST_HEAD(lru);
 static struct fd *fds;
 static int free_fd, max_fd;
 
+static int list_len(struct list_head *h, int *freep)
+{
+	struct list_head *l;
+	int i = 0;
+	*freep = 0;
+	list_for_each (l, h) {
+		struct fd *fd = list_entry(l, struct fd, lru);
+		if (!fd->entry) (*freep)++;
+		i++;
+	}
+	return i;
+}
+
+static void log_lru(void)
+{
+	static FILE *f; 
+	int fl = 0;
+	if (!f) f = fopen("/tmp/lru", "w");
+	int len = list_len(&lru, &fl);
+	fprintf(f, "%d %d\n", len, fl);
+}
+
 static void init_fd(void)
 {
 	struct rlimit rlim;
@@ -350,19 +394,13 @@ static void do_close_fd(struct fd *fd)
 static struct fd *get_unused_fd(void)
 {
 	struct fd *fd;
-	if (!list_empty(&lru)) {
-		fd = list_entry(lru.prev, struct fd, lru);
-		if (!fd->entry) {
-			list_del(&fd->lru);
-			return fd;
-		}
-	}
-	if (free_fd < max_fd) {
-		fd = &fds[free_fd++];
-	} else {
+	if (free_fd < max_fd)
+		return &fds[free_fd++];
+	assert(!list_empty(&lru));
+	fd = list_entry(lru.prev, struct fd, lru);
+	list_del(&fd->lru);
+	if (fd->entry)
 		do_close_fd(fd);
-		list_del(&fd->lru);
-	}
 	return fd;
 }
 
@@ -396,6 +434,10 @@ static void close_fd(struct fd *fd)
 static void usage(void)
 {
 	fprintf(stderr, "Usage: fastwalk [-pSKIP] [-r]\n"
+			"Generate list of files in (approx) logical disk order to minimize seeks.\n"
+			"By default a list of names is generated, that can be\n"
+		       	"read by another program\n"
+			"\n"
 			"-pSKIP skip files/directories named SKIP\n"
 			"-r     read ahead files instead of outputting name\n");
 	exit(1);
@@ -418,6 +460,9 @@ int main(int ac, char **av)
 			break;
 		case 'r':
 			do_readahead = 1;
+			break;
+		case 'd':
+			debug++;
 			break;
 		default:
 			usage();
@@ -454,8 +499,9 @@ int main(int ac, char **av)
 		if (fd >= 0) {
 			get_disk(entries[i].name, fd, &entries[i]);
 			close(fd);
-		} else
+		} else {
 			Perror(entries[i].name);
+		}
 	}
 
 	if (do_readahead) {
@@ -468,7 +514,9 @@ int main(int ac, char **av)
 			struct extent *ex = &extents[i];
 			struct entry *e = ex->entry;
 			struct fd *fd = get_fd(e);
-			
+
+			if (debug > 0)	
+				log_lru();
 			if (!fd) { 
 				Perror(e->name);
 				continue;
