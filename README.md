@@ -30,9 +30,8 @@ For example speeding up large builds (assuming you have enough memory):
 	fastwalk -r . &
 	make ...
 
-fastwalk will start the readahead in the background to load all files.
-This works best if you work with a separate object directory and do
-not include the object files in the fast path walk.
+fastwalk will start the readahead in the background to load all files
+into memory.
 
 I also use it to speedup large greps or indexing operations on 
 source trees (it makes GNU grep mostly competive with git grep
