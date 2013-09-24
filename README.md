@@ -18,10 +18,18 @@ contents
 
 ## Usage
 
+To use
+
 	fastwalk [-r] [-p skipdir]  dir ...
 
 	-p skipdir adds directory names to skip.
 	-r start readahead of the file contents
+
+To build
+
+	make
+	cp fastwalk $prefix/bin
+	cp fastwalk.1 $prefix/man/man1
 
 ## Caveats
 
