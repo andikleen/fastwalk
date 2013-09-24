@@ -1,4 +1,6 @@
-= fastwalk =
+# fastwalk
+
+## Introduction
 
 fastwalk is simple Linux utility to walk directory trees in logical
 disk order. Best on spinning disks.A simple usage would be to speed up
@@ -14,14 +16,14 @@ and then outputs the list of file names in disk order. Alternatively
 (with the -r option) it can also start readahead for the file 
 contents
 
-== Usage ==
+## Usage
 
 	fastwalk [-r] [-p skipdir]  dir ...
 
--p skipdir adds directory names to skip.
--r start readahead of the file contents
+	-p skipdir adds directory names to skip.
+	-r start readahead of the file contents
 
-== Caveats ==
+## Caveats
 
 It works best on file systems with a classical BSD style layout, like
 ext*. XFS has some limitations (lack of DT_* types), also does btrfs.
