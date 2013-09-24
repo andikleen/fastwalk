@@ -18,18 +18,32 @@ contents
 
 ## Usage
 
-To use
-
-	fastwalk [-r] [-p skipdir]  dir ...
-
-	-p skipdir adds directory names to skip.
-	-r start readahead of the file contents
-
 To build
 
 	make
 	cp fastwalk $prefix/bin
 	cp fastwalk.1 $prefix/man/man1
+
+For example speeding up large builds (assuming you have enough memory):
+
+	cd my-big-project
+	fastwalk -r . &
+	make ...
+
+fastwalk will start the readahead in the background to load all files.
+This works best if you work with a separate object directory and do
+not include the object files in the fast path walk.
+
+I also use it to speedup large greps or indexing operations on 
+source trees (it makes GNU grep mostly competive with git grep
+in performance on spinning disks)
+	
+All options
+
+	fastwalk [-r] [-p skipdir]  dir ...
+
+	-p skipdir adds directory names to skip.
+	-r start readahead of the file contents
 
 ## Caveats
 
